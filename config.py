@@ -6,19 +6,20 @@ Modifica questi valori con gli ID del tuo server.
 # ─────────────────────────────────────────
 #  ID RUOLI (copia da Discord: tasto destro sul ruolo → Copia ID)
 # ─────────────────────────────────────────
-ROLE_MODERAZIONE = 1490702856888647781   # ID ruolo Moderazione
-ROLE_AMMINISTRAZIONE = 1490702923146072147   # ID ruolo Amministrazione
+ROLE_AMMINISTRAZIONE = 000000000000000000   # ID ruolo Amministrazione
 
 # Ruoli che possono usare /richiesta-staff
 ALLOWED_ROLES = [
-    1490703252528959498,  # Staff
+    000000000000000000,  # Helper
+    000000000000000000,  # Supporto
+    000000000000000000,  # Moderatore
     # Aggiungi altri ruoli staff
 ]
 
 # ─────────────────────────────────────────
 #  CANALE LOG (opzionale — metti 0 per disabilitare)
 # ─────────────────────────────────────────
-LOG_CHANNEL_ID = 1490705146899075174   # ID del canale dove loggare le richieste
+LOG_CHANNEL_ID = 0   # ID del canale dove loggare le richieste
 
 # ─────────────────────────────────────────
 #  PREFISSO NOME CANALI TICKET
@@ -27,16 +28,16 @@ LOG_CHANNEL_ID = 1490705146899075174   # ID del canale dove loggare le richieste
 TICKET_PREFIXES = ["ticket", "supporto", "aiuto", "help"]
 
 # ─────────────────────────────────────────
-#  COLORI EMBED (formato 0xRRGGBB)
+#  COLORI EMBED — tonalità viola per priorità
 # ─────────────────────────────────────────
 COLORS = {
-    "urgente": 0xe53935,
-    "alta":    0xfb8c00,
-    "media":   0xfdd835,
-    "bassa":   0x43a047,
+    "urgente": 0x4a0080,   # viola intenso/scuro
+    "alta":    0x6b21a8,   # viola medio-scuro
+    "media":   0x7c3ec4,   # viola standard
+    "bassa":   0xa78bca,   # viola tenue/chiaro
     "default": 0x7c3ec4,
-    "resolved":0x5865f2,
-    "log":     0x7c3ec4,
+    "resolved":0x7c3ec4,
+    "log":     0x6b21a8,
 }
 
 # ─────────────────────────────────────────
@@ -50,12 +51,10 @@ PRIORITY_EMOJI = {
 }
 
 TEAM_EMOJI = {
-    "moderazione":    "🛡️",
     "amministrazione": "⚜️",
 }
 
 TEAM_LABEL = {
-    "moderazione":    "Moderazione",
     "amministrazione": "Amministrazione",
 }
 
