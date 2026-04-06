@@ -6,21 +6,19 @@ Modifica questi valori con gli ID del tuo server.
 # ─────────────────────────────────────────
 #  ID RUOLI (copia da Discord: tasto destro sul ruolo → Copia ID)
 # ─────────────────────────────────────────
-ROLE_MODERAZIONE = 000000000000000000   # ID ruolo Moderazione
-ROLE_AMMINISTRAZIONE = 000000000000000000   # ID ruolo Amministrazione
+ROLE_MODERAZIONE = 1490702856888647781   # ID ruolo Moderazione
+ROLE_AMMINISTRAZIONE = 1490702923146072147   # ID ruolo Amministrazione
 
 # Ruoli che possono usare /richiesta-staff
 ALLOWED_ROLES = [
-    000000000000000000,  # Helper
-    000000000000000000,  # Supporto
-    000000000000000000,  # Moderatore
+    1490703252528959498,  # Staff
     # Aggiungi altri ruoli staff
 ]
 
 # ─────────────────────────────────────────
 #  CANALE LOG (opzionale — metti 0 per disabilitare)
 # ─────────────────────────────────────────
-LOG_CHANNEL_ID = 0   # ID del canale dove loggare le richieste
+LOG_CHANNEL_ID = 1490705146899075174   # ID del canale dove loggare le richieste
 
 # ─────────────────────────────────────────
 #  PREFISSO NOME CANALI TICKET
