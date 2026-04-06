@@ -86,30 +86,18 @@ class StaffRequestModal(discord.ui.Modal):
         db.update_message_id(request["id"], msg.id)
 
         await interaction.followup.send(
-            f"✅ Richiesta `{request['id']}` inviata con successo!",
+            f"✅ Richiesta `{request['id']}` inviata con successo! Il team è stato notificato in DM.",
             ephemeral=True
         )
 
-        # Ping ruolo nel canale
+        # Determina ruolo
         role_id = (
             config.ROLE_MODERAZIONE
             if self.team == "moderazione"
             else config.ROLE_AMMINISTRAZIONE
         )
-        role = interaction.guild.get_role(role_id)
-        if role:
-            ping_msg = await interaction.channel.send(
-                f"{role.mention} — <@{interaction.user.id}> ha aperto una richiesta `{config.PRIORITY_EMOJI[priorita]} {priorita.upper()}`.",
-                allowed_mentions=discord.AllowedMentions(roles=True),
-            )
-            # Elimina il ping dopo 10s per non spammare
-            await asyncio.sleep(10)
-            try:
-                await ping_msg.delete()
-            except Exception:
-                pass
 
-        # DM ai membri del team
+        # DM ai membri del team (subito, senza aspettare il ping)
         await send_dms(
             guild=interaction.guild,
             role_id=role_id,
@@ -117,6 +105,21 @@ class StaffRequestModal(discord.ui.Modal):
             requester=interaction.user,
             channel=interaction.channel,
         )
+
+        # Ping ruolo nel canale — eliminato in background così non blocca
+        role = interaction.guild.get_role(role_id)
+        if role:
+            async def ping_and_delete():
+                try:
+                    ping_msg = await interaction.channel.send(
+                        f"{role.mention}",
+                        allowed_mentions=discord.AllowedMentions(roles=True),
+                    )
+                    await asyncio.sleep(0)   # cede il controllo, poi elimina subito
+                    await ping_msg.delete()
+                except Exception:
+                    pass
+            asyncio.create_task(ping_and_delete())
 
         # Log su canale dedicato
         await send_log(
@@ -391,24 +394,55 @@ async def send_dms(
     priorita = request["priority"]
     p_emoji = config.PRIORITY_EMOJI.get(priorita, "⚪")
     team_label = config.TEAM_LABEL[request["team"]]
+    t_emoji = config.TEAM_EMOJI.get(request["team"], "👥")
     colore = config.COLORS.get(priorita, config.COLORS["default"])
     ticket_url = f"https://discord.com/channels/{guild.id}/{channel.id}"
+    created_at = datetime.fromisoformat(request["created_at"])
+    timestamp_str = created_at.strftime("%d/%m/%Y alle %H:%M")
 
     dm_embed = discord.Embed(
-        title="📬  Sei stato chiamato in un ticket",
+        title=f"{p_emoji}  Richiesta {priorita.upper()} — {t_emoji} Team {team_label}",
         description=(
-            f"Uno staff member richiede la tua presenza nel ticket **{channel.name}**"
-            f" del server **{guild.name}**.\n\n"
-            f"**{p_emoji} Priorità:** {priorita.upper()}\n"
-            f"**Richiedente:** {requester.display_name}\n"
-            f"**Motivo:** {request['reason'][:200]}{'...' if len(request['reason']) > 200 else ''}"
+            f"Sei stato chiamato nel ticket **#{channel.name}** sul server **{guild.name}**.\n"
+            f"Un membro dello staff richiede la presenza del tuo team.\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=colore,
         timestamp=datetime.utcnow(),
     )
-    dm_embed.add_field(name="🔗  Link al ticket", value=f"[Clicca qui per andare al ticket]({ticket_url})", inline=False)
-    dm_embed.set_footer(text=f"Oblivion Network  •  {request['id']}")
-    dm_embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
+    dm_embed.set_author(
+        name=f"Oblivion Network — Richiesta Staff",
+        icon_url=guild.icon.url if guild.icon else None,
+    )
+    dm_embed.set_thumbnail(url=requester.display_avatar.url if requester.display_avatar else None)
+
+    dm_embed.add_field(name=f"{p_emoji}  Priorità", value=f"**{priorita.upper()}**", inline=True)
+    dm_embed.add_field(name=f"{t_emoji}  Team chiamato", value=f"**{team_label}**", inline=True)
+    dm_embed.add_field(name="🕐  Orario richiesta", value=timestamp_str, inline=True)
+
+    dm_embed.add_field(name="👤  Richiedente", value=f"{requester.display_name} (`{requester.name}`)", inline=True)
+    dm_embed.add_field(name="🎫  Canale ticket", value=f"#{channel.name}", inline=True)
+    dm_embed.add_field(name="🆔  ID Richiesta", value=f"`{request['id']}`", inline=True)
+
+    dm_embed.add_field(
+        name="📋  Motivo della richiesta",
+        value=f"> {request['reason'][:300]}{'...' if len(request['reason']) > 300 else ''}",
+        inline=False,
+    )
+    if request.get("notes") and request["notes"] != "Nessuna nota aggiuntiva.":
+        dm_embed.add_field(
+            name="📝  Note aggiuntive",
+            value=f"> {request['notes'][:200]}{'...' if len(request['notes']) > 200 else ''}",
+            inline=False,
+        )
+
+    dm_embed.add_field(
+        name="🔗  Accedi al ticket",
+        value=f"[**→ Clicca qui per aprire il ticket**]({ticket_url})\n`{ticket_url}`",
+        inline=False,
+    )
+
+    dm_embed.set_footer(text=f"Oblivion Network  •  {request['id']}  •  Questo messaggio è automatico")
 
     sent = 0
     failed = 0
