@@ -1,7 +1,8 @@
 """
-cogs/staff_request.py — Comando /richiesta-staff
+cogs/staff_request.py — Comando /richiesta-staff (solo Amministrazione)
 """
 
+import asyncio
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -18,52 +19,47 @@ log = logging.getLogger("OblivionBot.StaffRequest")
 #  MODAL
 # ─────────────────────────────────────────
 
-class StaffRequestModal(discord.ui.Modal):
-    def __init__(self, team: str):
-        label = config.TEAM_LABEL[team]
-        super().__init__(title=f"Richiesta {label}", timeout=config.MODAL_TIMEOUT)
-        self.team = team
+class StaffRequestModal(discord.ui.Modal, title="⚜️  Richiesta Amministrazione"):
+    def __init__(self):
+        super().__init__(timeout=config.MODAL_TIMEOUT)
 
-        self.priorita = discord.ui.TextInput(
-            label="Priorità",
-            placeholder="urgente / alta / media / bassa",
-            max_length=10,
-            required=True,
-            style=discord.TextStyle.short,
-        )
-        self.motivo = discord.ui.TextInput(
-            label="Motivo della richiesta",
-            placeholder="Descrivi il motivo per cui chiami questo team...",
-            max_length=500,
-            required=True,
-            style=discord.TextStyle.paragraph,
-        )
-        self.note = discord.ui.TextInput(
-            label="Note aggiuntive (opzionale)",
-            placeholder="Qualsiasi informazione extra utile al team...",
-            max_length=300,
-            required=False,
-            style=discord.TextStyle.paragraph,
-        )
-        self.add_item(self.priorita)
-        self.add_item(self.motivo)
-        self.add_item(self.note)
+    priorita = discord.ui.TextInput(
+        label="Priorità",
+        placeholder="urgente / alta / media / bassa",
+        max_length=10,
+        required=True,
+        style=discord.TextStyle.short,
+    )
+    motivo = discord.ui.TextInput(
+        label="Motivo della richiesta",
+        placeholder="Descrivi chiaramente il motivo per cui chiami l'Amministrazione...",
+        max_length=500,
+        required=True,
+        style=discord.TextStyle.paragraph,
+    )
+    note = discord.ui.TextInput(
+        label="Note aggiuntive (opzionale)",
+        placeholder="Qualsiasi informazione extra utile all'Amministrazione...",
+        max_length=300,
+        required=False,
+        style=discord.TextStyle.paragraph,
+    )
 
     async def on_submit(self, interaction: discord.Interaction):
         priorita_raw = self.priorita.value.strip().lower()
         valide = ["urgente", "alta", "media", "bassa"]
         priorita = priorita_raw if priorita_raw in valide else "media"
         motivo = self.motivo.value.strip()
-        note = self.note.value.strip() or "Nessuna nota aggiuntiva."
+        note = self.note.value.strip() or None
 
         await interaction.response.defer(ephemeral=True)
 
         # Salva nel DB
         request = db.new_request(
-            team=self.team,
+            team="amministrazione",
             priority=priorita,
             reason=motivo,
-            notes=note,
+            notes=note or "Nessuna nota aggiuntiva.",
             requester_id=interaction.user.id,
             channel_id=interaction.channel.id,
             guild_id=interaction.guild.id,
@@ -71,7 +67,7 @@ class StaffRequestModal(discord.ui.Modal):
 
         stats = db.get_stats()
 
-        # Build embed principale
+        # Embed nel canale ticket
         embed = build_request_embed(
             request=request,
             requester=interaction.user,
@@ -79,35 +75,25 @@ class StaffRequestModal(discord.ui.Modal):
             stats=stats,
         )
 
-        # View con bottone "Segna come risolto"
         view = ResolveView(req_id=request["id"])
-
         msg = await interaction.channel.send(embed=embed, view=view)
         db.update_message_id(request["id"], msg.id)
 
         await interaction.followup.send(
-            f"✅ Richiesta `{request['id']}` inviata con successo! Il team è stato notificato in DM.",
-            ephemeral=True
+            f"✅ Richiesta `{request['id']}` inviata! L'Amministrazione è stata notificata in DM.",
+            ephemeral=True,
         )
 
-        # Determina ruolo
-        role_id = (
-            config.ROLE_MODERAZIONE
-            if self.team == "moderazione"
-            else config.ROLE_AMMINISTRAZIONE
-        )
-
-        # DM ai membri del team (subito, senza aspettare il ping)
+        # DM ai membri dell'amministrazione (subito)
         await send_dms(
             guild=interaction.guild,
-            role_id=role_id,
             request=request,
             requester=interaction.user,
             channel=interaction.channel,
         )
 
-        # Ping ruolo nel canale — eliminato in background così non blocca
-        role = interaction.guild.get_role(role_id)
+        # Ping ruolo → eliminato immediatamente in background
+        role = interaction.guild.get_role(config.ROLE_AMMINISTRAZIONE)
         if role:
             async def ping_and_delete():
                 try:
@@ -115,7 +101,7 @@ class StaffRequestModal(discord.ui.Modal):
                         f"{role.mention}",
                         allowed_mentions=discord.AllowedMentions(roles=True),
                     )
-                    await asyncio.sleep(0)   # cede il controllo, poi elimina subito
+                    await asyncio.sleep(0)
                     await ping_msg.delete()
                 except Exception:
                     pass
@@ -139,12 +125,12 @@ class StaffRequestModal(discord.ui.Modal):
 
 
 # ─────────────────────────────────────────
-#  VIEW — Bottone "Segna come risolto"
+#  VIEW — Bottoni risolvi / annulla
 # ─────────────────────────────────────────
 
 class ResolveView(discord.ui.View):
     def __init__(self, req_id: str):
-        super().__init__(timeout=None)  # Persistente al riavvio
+        super().__init__(timeout=None)
         self.req_id = req_id
 
     @discord.ui.button(
@@ -157,7 +143,6 @@ class ResolveView(discord.ui.View):
         if not request:
             await interaction.response.send_message("❌ Richiesta non trovata.", ephemeral=True)
             return
-
         if request["status"] == "resolved":
             await interaction.response.send_message("⚠️ Questa richiesta è già stata risolta.", ephemeral=True)
             return
@@ -167,33 +152,32 @@ class ResolveView(discord.ui.View):
             await interaction.response.send_message("❌ Impossibile risolvere la richiesta.", ephemeral=True)
             return
 
-        # Aggiorna embed
         stats = db.get_stats()
         requester = interaction.guild.get_member(resolved["requester_id"])
-        channel = interaction.channel
 
         embed = build_resolved_embed(
             request=resolved,
             requester=requester,
             resolver=interaction.user,
-            channel=channel,
+            channel=interaction.channel,
             stats=stats,
         )
 
-        button.disabled = True
-        button.label = "✅  Risolto"
+        for child in self.children:
+            child.disabled = True
+        button.label = "✅  Risolta"
+
         await interaction.message.edit(embed=embed, view=self)
         await interaction.response.send_message(
-            f"✅ Richiesta `{self.req_id}` segnata come risolta da {interaction.user.mention}.",
+            f"✅ Richiesta `{self.req_id}` risolta da {interaction.user.mention}."
         )
 
-        # Log
         await send_log(
             bot=interaction.client,
             guild=interaction.guild,
             request=resolved,
             requester=requester,
-            channel=channel,
+            channel=interaction.channel,
             resolved_by=interaction.user,
         )
 
@@ -208,17 +192,15 @@ class ResolveView(discord.ui.View):
             await interaction.response.send_message("❌ Richiesta non trovata.", ephemeral=True)
             return
 
-        # Solo il richiedente o un admin può annullare
         is_requester = interaction.user.id == request["requester_id"]
         is_admin = interaction.user.guild_permissions.administrator
 
         if not (is_requester or is_admin):
             await interaction.response.send_message(
                 "❌ Solo il richiedente o un amministratore può annullare questa richiesta.",
-                ephemeral=True
+                ephemeral=True,
             )
             return
-
         if request["status"] == "resolved":
             await interaction.response.send_message("⚠️ La richiesta è già stata risolta.", ephemeral=True)
             return
@@ -240,44 +222,7 @@ class ResolveView(discord.ui.View):
 
 
 # ─────────────────────────────────────────
-#  VIEW — Selezione team (ephemeral)
-# ─────────────────────────────────────────
-
-class TeamSelectView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-
-    @discord.ui.select(
-        cls=discord.ui.Select,
-        placeholder="Seleziona il team da chiamare...",
-        options=[
-            discord.SelectOption(
-                label="Team Moderazione",
-                description="Chiama i moderatori del server",
-                value="moderazione",
-                emoji="🛡️",
-            ),
-            discord.SelectOption(
-                label="Team Amministrazione",
-                description="Chiama gli amministratori del server",
-                value="amministrazione",
-                emoji="⚜️",
-            ),
-        ],
-    )
-    async def select_team(self, interaction: discord.Interaction, select: discord.ui.Select):
-        team = select.values[0]
-        modal = StaffRequestModal(team=team)
-        await interaction.response.send_modal(modal)
-        self.stop()
-
-    async def on_timeout(self):
-        for child in self.children:
-            child.disabled = True
-
-
-# ─────────────────────────────────────────
-#  HELPER — Build embed richiesta aperta
+#  HELPER — Embed richiesta aperta
 # ─────────────────────────────────────────
 
 def build_request_embed(
@@ -286,48 +231,58 @@ def build_request_embed(
     channel: discord.TextChannel,
     stats: dict,
 ) -> discord.Embed:
-    team = request["team"]
     priorita = request["priority"]
     p_emoji = config.PRIORITY_EMOJI.get(priorita, "⚪")
-    t_emoji = config.TEAM_EMOJI.get(team, "👥")
     colore = config.COLORS.get(priorita, config.COLORS["default"])
-    label = config.TEAM_LABEL[team]
-
-    avg = f"{stats['avg_response_min']} min" if stats['avg_response_min'] > 0 else "N/D"
+    avg = f"{stats['avg_response_min']} min" if stats["avg_response_min"] > 0 else "N/D"
 
     embed = discord.Embed(
-        title=f"{t_emoji}  Richiesta al Team {label}",
+        title=f"⚜️  Richiesta al Team Amministrazione",
         description=(
-            f"{requester.mention} ha inviato una richiesta al team di **{label}**.\n"
-            f"Il team è stato notificato. Attendere la risposta nel ticket."
+            f"{requester.mention} ha aperto una richiesta urgente al team di **Amministrazione**.\n"
+            f"Il team è stato notificato e raggiungerà il ticket il prima possibile."
         ),
         color=colore,
         timestamp=datetime.utcnow(),
     )
-    embed.set_author(name="Richiesta Staff — Oblivion Network")
+    embed.set_author(name="Oblivion Network — Richiesta Staff")
+    embed.set_thumbnail(url=requester.display_avatar.url if requester.display_avatar else None)
+
     embed.add_field(name=f"{p_emoji}  Priorità", value=f"**{priorita.upper()}**", inline=True)
-    embed.add_field(name=f"{t_emoji}  Team chiamato", value=label, inline=True)
+    embed.add_field(name="⚜️  Team", value="Amministrazione", inline=True)
+    embed.add_field(name="🕐  Orario", value=datetime.utcnow().strftime("%d/%m/%Y %H:%M"), inline=True)
+
     embed.add_field(name="👤  Richiedente", value=requester.mention, inline=True)
     embed.add_field(name="🎫  Ticket", value=channel.mention, inline=True)
-    embed.add_field(name="📋  Motivo della richiesta", value=request["reason"], inline=False)
-    embed.add_field(name="📝  Note aggiuntive", value=request["notes"], inline=False)
+    embed.add_field(name="🆔  ID Richiesta", value=f"`{request['id']}`", inline=True)
+
     embed.add_field(
-        name="📊  Statistiche",
+        name="📋  Motivo della richiesta",
+        value=f"> {request['reason']}",
+        inline=False,
+    )
+    if request.get("notes") and request["notes"] != "Nessuna nota aggiuntiva.":
+        embed.add_field(
+            name="📝  Note aggiuntive",
+            value=f"> {request['notes']}",
+            inline=False,
+        )
+
+    embed.add_field(
+        name="📊  Statistiche sistema",
         value=(
-            f"🟢 Tempo medio risposta: **{avg}**  •  "
+            f"⏱️ Tempo medio risposta: **{avg}**  •  "
             f"🟡 Richieste aperte: **{stats['open']}**  •  "
             f"✅ Risolte oggi: **{stats['resolved_today']}**"
         ),
         inline=False,
     )
-    embed.set_footer(text=f"Oblivion Network  •  {request['id']}")
-    if requester.display_avatar:
-        embed.set_thumbnail(url=requester.display_avatar.url)
+    embed.set_footer(text=f"Oblivion Network  •  {request['id']}  •  In attesa di risposta")
     return embed
 
 
 # ─────────────────────────────────────────
-#  HELPER — Build embed richiesta risolta
+#  HELPER — Embed richiesta risolta
 # ─────────────────────────────────────────
 
 def build_resolved_embed(
@@ -337,36 +292,38 @@ def build_resolved_embed(
     channel: discord.TextChannel,
     stats: dict,
 ) -> discord.Embed:
-    team = request["team"]
     priorita = request["priority"]
     p_emoji = config.PRIORITY_EMOJI.get(priorita, "⚪")
-    t_emoji = config.TEAM_EMOJI.get(team, "👥")
-    label = config.TEAM_LABEL[team]
-    avg = f"{stats['avg_response_min']} min" if stats['avg_response_min'] > 0 else "N/D"
+    avg = f"{stats['avg_response_min']} min" if stats["avg_response_min"] > 0 else "N/D"
 
     resolved_at = datetime.fromisoformat(request["resolved_at"]) if request.get("resolved_at") else datetime.utcnow()
     created_at = datetime.fromisoformat(request["created_at"])
     elapsed = round((resolved_at - created_at).total_seconds() / 60, 1)
 
     embed = discord.Embed(
-        title=f"✅  Richiesta Risolta — {label}",
+        title="✅  Richiesta Risolta — Amministrazione",
         description=(
             f"La richiesta è stata gestita da {resolver.mention}.\n"
-            f"Tempo di risposta: **{elapsed} minuti**"
+            f"⏱️ Tempo di risposta: **{elapsed} minuti**"
         ),
         color=config.COLORS["resolved"],
         timestamp=resolved_at,
     )
-    embed.set_author(name="Richiesta Staff — Oblivion Network")
+    embed.set_author(name="Oblivion Network — Richiesta Staff")
+
     embed.add_field(name=f"{p_emoji}  Priorità", value=f"**{priorita.upper()}**", inline=True)
-    embed.add_field(name=f"{t_emoji}  Team", value=label, inline=True)
+    embed.add_field(name="✅  Gestita da", value=resolver.mention, inline=True)
+    embed.add_field(name="🕐  Risolta il", value=resolved_at.strftime("%d/%m/%Y %H:%M"), inline=True)
+
     embed.add_field(name="👤  Richiedente", value=requester.mention if requester else "Sconosciuto", inline=True)
-    embed.add_field(name="✅  Gestito da", value=resolver.mention, inline=True)
-    embed.add_field(name="📋  Motivo originale", value=request["reason"], inline=False)
+    embed.add_field(name="🎫  Ticket", value=channel.mention, inline=True)
+    embed.add_field(name="🆔  ID", value=f"`{request['id']}`", inline=True)
+
+    embed.add_field(name="📋  Motivo originale", value=f"> {request['reason']}", inline=False)
     embed.add_field(
         name="📊  Statistiche",
         value=(
-            f"🟢 Tempo medio risposta: **{avg}**  •  "
+            f"⏱️ Tempo medio risposta: **{avg}**  •  "
             f"✅ Risolte oggi: **{stats['resolved_today']}**"
         ),
         inline=False,
@@ -376,51 +333,52 @@ def build_resolved_embed(
 
 
 # ─────────────────────────────────────────
-#  HELPER — Invia DM ai membri del team
+#  HELPER — DM ai membri dell'Amministrazione
 # ─────────────────────────────────────────
 
 async def send_dms(
     guild: discord.Guild,
-    role_id: int,
     request: dict,
     requester: discord.Member,
     channel: discord.TextChannel,
 ):
-    role = guild.get_role(role_id)
+    role = guild.get_role(config.ROLE_AMMINISTRAZIONE)
     if not role:
-        log.warning(f"Ruolo {role_id} non trovato.")
+        log.warning(f"Ruolo Amministrazione ({config.ROLE_AMMINISTRAZIONE}) non trovato.")
         return
 
     priorita = request["priority"]
     p_emoji = config.PRIORITY_EMOJI.get(priorita, "⚪")
-    team_label = config.TEAM_LABEL[request["team"]]
-    t_emoji = config.TEAM_EMOJI.get(request["team"], "👥")
     colore = config.COLORS.get(priorita, config.COLORS["default"])
     ticket_url = f"https://discord.com/channels/{guild.id}/{channel.id}"
     created_at = datetime.fromisoformat(request["created_at"])
     timestamp_str = created_at.strftime("%d/%m/%Y alle %H:%M")
 
     dm_embed = discord.Embed(
-        title=f"{p_emoji}  Richiesta {priorita.upper()} — {t_emoji} Team {team_label}",
+        title=f"{p_emoji}  Richiesta {priorita.upper()} — ⚜️ Amministrazione",
         description=(
             f"Sei stato chiamato nel ticket **#{channel.name}** sul server **{guild.name}**.\n"
-            f"Un membro dello staff richiede la presenza del tuo team.\n\n"
+            f"Un membro dello staff richiede la presenza dell'Amministrazione.\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=colore,
         timestamp=datetime.utcnow(),
     )
     dm_embed.set_author(
-        name=f"Oblivion Network — Richiesta Staff",
+        name="Oblivion Network — Richiesta Staff",
         icon_url=guild.icon.url if guild.icon else None,
     )
     dm_embed.set_thumbnail(url=requester.display_avatar.url if requester.display_avatar else None)
 
     dm_embed.add_field(name=f"{p_emoji}  Priorità", value=f"**{priorita.upper()}**", inline=True)
-    dm_embed.add_field(name=f"{t_emoji}  Team chiamato", value=f"**{team_label}**", inline=True)
+    dm_embed.add_field(name="⚜️  Team", value="**Amministrazione**", inline=True)
     dm_embed.add_field(name="🕐  Orario richiesta", value=timestamp_str, inline=True)
 
-    dm_embed.add_field(name="👤  Richiedente", value=f"{requester.display_name} (`{requester.name}`)", inline=True)
+    dm_embed.add_field(
+        name="👤  Richiedente",
+        value=f"{requester.display_name} (`{requester.name}`)",
+        inline=True,
+    )
     dm_embed.add_field(name="🎫  Canale ticket", value=f"#{channel.name}", inline=True)
     dm_embed.add_field(name="🆔  ID Richiesta", value=f"`{request['id']}`", inline=True)
 
@@ -441,8 +399,9 @@ async def send_dms(
         value=f"[**→ Clicca qui per aprire il ticket**]({ticket_url})\n`{ticket_url}`",
         inline=False,
     )
-
-    dm_embed.set_footer(text=f"Oblivion Network  •  {request['id']}  •  Questo messaggio è automatico")
+    dm_embed.set_footer(
+        text=f"Oblivion Network  •  {request['id']}  •  Messaggio automatico"
+    )
 
     sent = 0
     failed = 0
@@ -458,7 +417,7 @@ async def send_dms(
             log.warning(f"Impossibile inviare DM a {member}: {e}")
             failed += 1
 
-    log.info(f"DM inviati: {sent} successo, {failed} falliti per {team_label}.")
+    log.info(f"DM Amministrazione: {sent} inviati, {failed} falliti.")
 
 
 # ─────────────────────────────────────────
@@ -481,17 +440,21 @@ async def send_log(
 
     priorita = request["priority"]
     p_emoji = config.PRIORITY_EMOJI.get(priorita, "⚪")
-    status = "🟢 Risolta" if request["status"] == "resolved" else "🟡 Aperta"
+    status = "✅ Risolta" if request["status"] == "resolved" else "🟡 Aperta"
 
     embed = discord.Embed(
-        title=f"📋  Log Richiesta Staff  •  {request['id']}",
+        title=f"📋  Log Richiesta  •  {request['id']}",
         color=config.COLORS["log"],
         timestamp=datetime.utcnow(),
     )
-    embed.add_field(name="Team", value=config.TEAM_LABEL[request["team"]], inline=True)
+    embed.add_field(name="Team", value="⚜️ Amministrazione", inline=True)
     embed.add_field(name="Priorità", value=f"{p_emoji} {priorita.upper()}", inline=True)
     embed.add_field(name="Stato", value=status, inline=True)
-    embed.add_field(name="Richiedente", value=requester.mention if requester else str(request["requester_id"]), inline=True)
+    embed.add_field(
+        name="Richiedente",
+        value=requester.mention if requester else str(request["requester_id"]),
+        inline=True,
+    )
     embed.add_field(name="Ticket", value=channel.mention, inline=True)
     if resolved_by:
         embed.add_field(name="Gestita da", value=resolved_by.mention, inline=True)
@@ -508,16 +471,13 @@ async def send_log(
 #  COG
 # ─────────────────────────────────────────
 
-import asyncio
-
-
 class StaffRequestCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     @app_commands.command(
         name="richiesta-staff",
-        description="Chiama il team di moderazione o amministrazione nel ticket"
+        description="Chiama il team Amministrazione nel ticket"
     )
     async def richiesta_staff(self, interaction: discord.Interaction):
         # Controlla che il canale sia un ticket
@@ -530,7 +490,7 @@ class StaffRequestCog(commands.Cog):
             )
             return
 
-        # Controlla che l'utente abbia un ruolo autorizzato
+        # Controlla permessi
         user_roles = [r.id for r in interaction.user.roles]
         is_allowed = (
             any(r in user_roles for r in config.ALLOWED_ROLES)
@@ -543,42 +503,60 @@ class StaffRequestCog(commands.Cog):
             )
             return
 
-        view = TeamSelectView()
-        await interaction.response.send_message(
-            "Seleziona il team che vuoi chiamare:",
-            view=view,
-            ephemeral=True,
-        )
+        # Apre direttamente il modal, senza menu di selezione
+        modal = StaffRequestModal()
+        await interaction.response.send_modal(modal)
 
     @app_commands.command(
         name="richieste-aperte",
-        description="Mostra tutte le richieste staff ancora aperte"
+        description="Mostra tutte le richieste Amministrazione ancora aperte"
     )
     @app_commands.default_permissions(manage_messages=True)
     async def richieste_aperte(self, interaction: discord.Interaction):
         open_reqs = db.get_open_requests()
         if not open_reqs:
-            await interaction.response.send_message("✅ Nessuna richiesta aperta al momento.", ephemeral=True)
+            await interaction.response.send_message(
+                "✅ Nessuna richiesta aperta al momento.", ephemeral=True
+            )
             return
 
         embed = discord.Embed(
-            title="📋  Richieste Staff Aperte",
+            title="📋  Richieste Amministrazione Aperte",
             color=config.COLORS["default"],
             timestamp=datetime.utcnow(),
         )
-        for req in open_reqs[:10]:  # Max 10
+        for req in open_reqs[:10]:
             p_emoji = config.PRIORITY_EMOJI.get(req["priority"], "⚪")
-            t_emoji = config.TEAM_EMOJI.get(req["team"], "👥")
-            channel = interaction.guild.get_channel(req["channel_id"])
-            ch_mention = channel.mention if channel else f"#{req['channel_id']}"
+            ch = interaction.guild.get_channel(req["channel_id"])
+            ch_mention = ch.mention if ch else f"#{req['channel_id']}"
             created = datetime.fromisoformat(req["created_at"])
             elapsed = round((datetime.utcnow() - created).total_seconds() / 60, 1)
             embed.add_field(
-                name=f"{p_emoji} {req['id']}  —  {t_emoji} {config.TEAM_LABEL[req['team']]}",
+                name=f"{p_emoji} {req['id']}",
                 value=f"{ch_mention}  •  {req['reason'][:80]}...\n⏱️ Aperta da **{elapsed} min**",
                 inline=False,
             )
         embed.set_footer(text=f"Oblivion Network  •  {len(open_reqs)} richieste aperte")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="statistiche-staff",
+        description="Statistiche generali del sistema richieste"
+    )
+    @app_commands.default_permissions(manage_messages=True)
+    async def statistiche_staff(self, interaction: discord.Interaction):
+        stats = db.get_stats()
+        avg = f"{stats['avg_response_min']} min" if stats["avg_response_min"] > 0 else "N/D"
+
+        embed = discord.Embed(
+            title="📊  Statistiche — Sistema Richieste Staff",
+            color=config.COLORS["default"],
+            timestamp=datetime.utcnow(),
+        )
+        embed.add_field(name="🟡  Richieste aperte", value=f"**{stats['open']}**", inline=True)
+        embed.add_field(name="✅  Risolte oggi", value=f"**{stats['resolved_today']}**", inline=True)
+        embed.add_field(name="⏱️  Tempo medio risposta", value=f"**{avg}**", inline=True)
+        embed.set_footer(text="Oblivion Network — Staff Request Stats")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
