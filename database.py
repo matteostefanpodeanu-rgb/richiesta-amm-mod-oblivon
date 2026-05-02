@@ -1,16 +1,75 @@
 """
-database.py — Gestione persistente delle statistiche e richieste
-Usa JSON come storage leggero. Sostituibile con SQLite/PostgreSQL.
+database.py — Gestione persistente delle statistiche, richieste e impostazioni
 """
 
 import json
 import os
-import asyncio
 from datetime import datetime, date
 from typing import Optional
 
 DB_PATH = "data/requests.json"
+SETTINGS_PATH = "data/settings.json"
 
+
+# ─────────────────────────────────────────
+#  SETTINGS (ruolo admin, ruoli autorizzati)
+# ─────────────────────────────────────────
+
+def _load_settings() -> dict:
+    os.makedirs("data", exist_ok=True)
+    if not os.path.exists(SETTINGS_PATH):
+        return {"admin_role_id": None, "allowed_roles": []}
+    with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def _save_settings(data: dict):
+    os.makedirs("data", exist_ok=True)
+    with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+def set_admin_role(role_id: int):
+    s = _load_settings()
+    s["admin_role_id"] = role_id
+    _save_settings(s)
+
+def get_admin_role() -> Optional[int]:
+    return _load_settings().get("admin_role_id")
+
+def set_allowed_roles(role_ids: list):
+    s = _load_settings()
+    s["allowed_roles"] = role_ids
+    _save_settings(s)
+
+def get_allowed_roles() -> list:
+    return _load_settings().get("allowed_roles", [])
+
+def add_allowed_role(role_id: int) -> bool:
+    """Aggiunge un ruolo. Ritorna False se già presente o limite raggiunto."""
+    s = _load_settings()
+    roles = s.get("allowed_roles", [])
+    if role_id in roles:
+        return False
+    if len(roles) >= 10:
+        return False
+    roles.append(role_id)
+    s["allowed_roles"] = roles
+    _save_settings(s)
+    return True
+
+def remove_allowed_role(role_id: int) -> bool:
+    s = _load_settings()
+    roles = s.get("allowed_roles", [])
+    if role_id not in roles:
+        return False
+    roles.remove(role_id)
+    s["allowed_roles"] = roles
+    _save_settings(s)
+    return True
+
+
+# ─────────────────────────────────────────
+#  REQUESTS
+# ─────────────────────────────────────────
 
 def _load() -> dict:
     os.makedirs("data", exist_ok=True)
@@ -28,30 +87,24 @@ def _load() -> dict:
     with open(DB_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
 
-
 def _save(data: dict):
     os.makedirs("data", exist_ok=True)
     with open(DB_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-
 def _check_daily_reset(data: dict) -> dict:
-    """Resetta i contatori giornalieri se è un nuovo giorno."""
     today = str(date.today())
     if data["stats"].get("last_reset") != today:
         data["stats"]["resolved_today"] = 0
         data["stats"]["last_reset"] = today
     return data
 
-
 def new_request(team: str, priority: str, reason: str, notes: str,
                 requester_id: int, channel_id: int, guild_id: int) -> dict:
-    """Crea una nuova richiesta e restituisce i dati salvati."""
     data = _load()
     data = _check_daily_reset(data)
     data["counter"] += 1
     data["stats"]["total"] += 1
-
     req_id = f"REQ-{data['counter']:04d}"
     request = {
         "id": req_id,
@@ -72,13 +125,11 @@ def new_request(team: str, priority: str, reason: str, notes: str,
     _save(data)
     return request
 
-
 def update_message_id(req_id: str, message_id: int):
     data = _load()
     if req_id in data["requests"]:
         data["requests"][req_id]["message_id"] = message_id
         _save(data)
-
 
 def resolve_request(req_id: str, resolved_by_id: int) -> Optional[dict]:
     data = _load()
@@ -88,31 +139,24 @@ def resolve_request(req_id: str, resolved_by_id: int) -> Optional[dict]:
     req = data["requests"][req_id]
     if req["status"] == "resolved":
         return None
-
     created = datetime.fromisoformat(req["created_at"])
     now = datetime.utcnow()
-    elapsed = (now - created).total_seconds() / 60  # minuti
-
+    elapsed = (now - created).total_seconds() / 60
     req["resolved_at"] = now.isoformat()
     req["resolved_by"] = resolved_by_id
     req["status"] = "resolved"
     data["stats"]["resolved_today"] += 1
     data["stats"]["response_times"].append(round(elapsed, 1))
-    # Mantieni solo ultimi 50 tempi per la media
     data["stats"]["response_times"] = data["stats"]["response_times"][-50:]
     _save(data)
     return req
-
 
 def get_stats() -> dict:
     data = _load()
     data = _check_daily_reset(data)
     times = data["stats"]["response_times"]
     avg_time = round(sum(times) / len(times), 1) if times else 0
-
-    open_requests = sum(
-        1 for r in data["requests"].values() if r["status"] == "open"
-    )
+    open_requests = sum(1 for r in data["requests"].values() if r["status"] == "open")
     return {
         "total": data["stats"]["total"],
         "resolved_today": data["stats"]["resolved_today"],
@@ -121,11 +165,9 @@ def get_stats() -> dict:
         "counter": data["counter"],
     }
 
-
 def get_request(req_id: str) -> Optional[dict]:
     data = _load()
     return data["requests"].get(req_id)
-
 
 def get_open_requests() -> list:
     data = _load()
