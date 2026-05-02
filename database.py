@@ -139,6 +139,8 @@ def new_request(team: str, priority: str, reason: str, notes: str,
         "resolved_by": None,
         "status": "open",
         "message_id": None,
+        "taken_by": None,
+        "resolution": None,
     }
     data["requests"][req_id] = request
     _save(data)
@@ -150,7 +152,13 @@ def update_message_id(req_id: str, message_id: int):
         data["requests"][req_id]["message_id"] = message_id
         _save(data)
 
-def resolve_request(req_id: str, resolved_by_id: int) -> Optional[dict]:
+def take_charge(req_id: str, user_id: int):
+    data = _load()
+    if req_id in data["requests"]:
+        data["requests"][req_id]["taken_by"] = user_id
+        _save(data)
+
+def resolve_request(req_id: str, resolved_by_id: int, resolution: str = None) -> Optional[dict]:
     data = _load()
     data = _check_daily_reset(data)
     if req_id not in data["requests"]:
@@ -163,6 +171,7 @@ def resolve_request(req_id: str, resolved_by_id: int) -> Optional[dict]:
     elapsed = (now - created).total_seconds() / 60
     req["resolved_at"] = now.isoformat()
     req["resolved_by"] = resolved_by_id
+    req["resolution"] = resolution
     req["status"] = "resolved"
     data["stats"]["resolved_today"] += 1
     data["stats"]["response_times"].append(round(elapsed, 1))
