@@ -54,12 +54,12 @@ class StaffRequestModal(discord.ui.Modal, title="⚜️  Richiesta Amministrazio
 
         await interaction.response.defer(ephemeral=True)
 
-        # Legge il ruolo admin dal DB (impostato con /set-admin-role)
-        admin_role_id = db.get_admin_role()
-        if not admin_role_id:
+        # Legge i ruoli admin dal DB
+        admin_role_ids = db.get_admin_roles()
+        if not admin_role_ids:
             await interaction.followup.send(
-                "❌ Il ruolo Amministrazione non è stato configurato.\n"
-                "Un amministratore deve usare `/set-admin-role` prima.",
+                "❌ Nessun ruolo Amministrazione configurato.\n"
+                "Un amministratore deve usare `/set-ruoli-amministrazione` prima.",
                 ephemeral=True,
             )
             return
@@ -93,29 +93,33 @@ class StaffRequestModal(discord.ui.Modal, title="⚜️  Richiesta Amministrazio
             ephemeral=True,
         )
 
-        # DM ai membri — passando il role_id letto dal DB
+        # DM a tutti i membri dei ruoli admin
         await send_dms(
             guild=interaction.guild,
-            admin_role_id=admin_role_id,
+            admin_role_ids=admin_role_ids,
             request=request,
             requester=interaction.user,
             channel=interaction.channel,
         )
 
-        # Ping ruolo → eliminato subito in background
-        role = interaction.guild.get_role(admin_role_id)
-        if role:
-            async def ping_and_delete():
-                try:
+        # Ping tutti i ruoli admin → eliminato subito in background
+        async def ping_and_delete():
+            try:
+                mentions = " ".join(
+                    interaction.guild.get_role(rid).mention
+                    for rid in admin_role_ids
+                    if interaction.guild.get_role(rid)
+                )
+                if mentions:
                     ping_msg = await interaction.channel.send(
-                        f"{role.mention}",
+                        mentions,
                         allowed_mentions=discord.AllowedMentions(roles=True),
                     )
                     await asyncio.sleep(0)
                     await ping_msg.delete()
-                except Exception:
-                    pass
-            asyncio.create_task(ping_and_delete())
+            except Exception:
+                pass
+        asyncio.create_task(ping_and_delete())
 
         # Log su canale dedicato
         await send_log(
@@ -305,15 +309,10 @@ def build_resolved_embed(request, requester, resolver, channel, stats) -> discor
 
 
 # ─────────────────────────────────────────
-#  DM ai membri dell'Amministrazione
+#  DM a tutti i membri dei ruoli admin
 # ─────────────────────────────────────────
 
-async def send_dms(guild, admin_role_id, request, requester, channel):
-    role = guild.get_role(admin_role_id)
-    if not role:
-        log.warning(f"Ruolo Amministrazione ID {admin_role_id} non trovato nel server.")
-        return
-
+async def send_dms(guild, admin_role_ids, request, requester, channel):
     priorita = request["priority"]
     p_emoji = config.PRIORITY_EMOJI.get(priorita, "⚪")
     colore = config.COLORS.get(priorita, config.COLORS["default"])
@@ -336,7 +335,6 @@ async def send_dms(guild, admin_role_id, request, requester, channel):
         icon_url=guild.icon.url if guild.icon else None,
     )
     dm_embed.set_thumbnail(url=requester.display_avatar.url if requester.display_avatar else None)
-
     dm_embed.add_field(name=f"{p_emoji}  Priorità", value=f"**{priorita.upper()}**", inline=True)
     dm_embed.add_field(name="⚜️  Team", value="**Amministrazione**", inline=True)
     dm_embed.add_field(name="🕐  Orario richiesta", value=timestamp_str, inline=True)
@@ -365,11 +363,20 @@ async def send_dms(guild, admin_role_id, request, requester, channel):
     )
     dm_embed.set_footer(text=f"Oblivion Network  •  {request['id']}  •  Messaggio automatico")
 
+    # Raccoglie tutti i membri unici da tutti i ruoli admin
+    members_to_notify = set()
+    for role_id in admin_role_ids:
+        role = guild.get_role(role_id)
+        if not role:
+            log.warning(f"Ruolo admin ID {role_id} non trovato nel server.")
+            continue
+        for member in role.members:
+            if not member.bot:
+                members_to_notify.add(member)
+
     sent = 0
     failed = 0
-    for member in role.members:
-        if member.bot:
-            continue
+    for member in members_to_notify:
         try:
             await member.send(embed=dm_embed)
             sent += 1
@@ -425,6 +432,22 @@ async def send_log(guild, request, requester, channel, resolved_by=None):
 
 
 # ─────────────────────────────────────────
+#  HELPER — embed configurazione
+# ─────────────────────────────────────────
+
+def build_config_embed(title, description, guild, current_roles, max_roles=10) -> discord.Embed:
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=config.COLORS["default"],
+        timestamp=datetime.utcnow(),
+    )
+    embed.add_field(name="📋  Ruoli configurati", value=f"{len(current_roles)}/{max_roles}", inline=True)
+    embed.set_footer(text="Oblivion Network — Configurazione")
+    return embed
+
+
+# ─────────────────────────────────────────
 #  COG
 # ─────────────────────────────────────────
 
@@ -438,7 +461,6 @@ class StaffRequestCog(commands.Cog):
         description="Chiama il team Amministrazione nel ticket"
     )
     async def richiesta_amministrazione(self, interaction: discord.Interaction):
-        # Controlla che il canale sia un ticket
         channel_name = interaction.channel.name.lower()
         is_ticket = any(channel_name.startswith(p) for p in config.TICKET_PREFIXES)
         if not is_ticket:
@@ -448,7 +470,6 @@ class StaffRequestCog(commands.Cog):
             )
             return
 
-        # Controlla permessi (ruoli autorizzati dal DB)
         allowed = db.get_allowed_roles()
         user_roles = [r.id for r in interaction.user.roles]
         is_allowed = (
@@ -465,25 +486,90 @@ class StaffRequestCog(commands.Cog):
         modal = StaffRequestModal()
         await interaction.response.send_modal(modal)
 
-    # ── /set-admin-role ──────────────────────────────────────
+    # ── /set-ruoli-amministrazione ───────────────────────────
     @app_commands.command(
-        name="set-admin-role",
-        description="[ADMIN] Imposta il ruolo Amministrazione che riceve le notifiche"
+        name="set-ruoli-amministrazione",
+        description="[ADMIN] Gestisci i ruoli Amministrazione che ricevono le notifiche (max 10)"
     )
     @app_commands.default_permissions(administrator=True)
-    async def set_admin_role(self, interaction: discord.Interaction, ruolo: discord.Role):
-        db.set_admin_role(ruolo.id)
-        embed = discord.Embed(
-            title="✅  Ruolo Amministrazione impostato",
-            description=f"Le richieste verranno ora inviate ai membri di {ruolo.mention}.",
-            color=config.COLORS["default"],
-            timestamp=datetime.utcnow(),
-        )
-        embed.add_field(name="🆔  ID Ruolo", value=f"`{ruolo.id}`", inline=True)
-        embed.add_field(name="👥  Membri", value=f"**{len([m for m in ruolo.members if not m.bot])}**", inline=True)
-        embed.set_footer(text="Oblivion Network — Configurazione")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        log.info(f"Admin role impostato: {ruolo.name} ({ruolo.id})")
+    @app_commands.describe(
+        azione="aggiungi, rimuovi o visualizza i ruoli",
+        ruolo="Il ruolo da aggiungere o rimuovere"
+    )
+    @app_commands.choices(azione=[
+        app_commands.Choice(name="➕ Aggiungi ruolo", value="add"),
+        app_commands.Choice(name="➖ Rimuovi ruolo", value="remove"),
+        app_commands.Choice(name="📋 Visualizza lista", value="list"),
+    ])
+    async def set_ruoli_amministrazione(
+        self,
+        interaction: discord.Interaction,
+        azione: str,
+        ruolo: discord.Role = None,
+    ):
+        current = db.get_admin_roles()
+
+        if azione == "list":
+            if not current:
+                desc = "Nessun ruolo configurato. Usa **➕ Aggiungi ruolo** per aggiungerne."
+            else:
+                desc = "\n".join(
+                    f"• {interaction.guild.get_role(r).mention if interaction.guild.get_role(r) else f'`{r}` (eliminato)'}"
+                    for r in current
+                )
+            embed = build_config_embed(
+                title=f"⚜️  Ruoli Amministrazione ({len(current)}/10)",
+                description=desc,
+                guild=interaction.guild,
+                current_roles=current,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        if ruolo is None:
+            await interaction.response.send_message("❌ Specifica un ruolo.", ephemeral=True)
+            return
+
+        if azione == "add":
+            if len(current) >= 10:
+                await interaction.response.send_message(
+                    "❌ Hai raggiunto il limite di **10 ruoli**. Rimuovine uno prima.",
+                    ephemeral=True,
+                )
+                return
+            ok = db.add_admin_role(ruolo.id)
+            if not ok:
+                await interaction.response.send_message(
+                    f"⚠️ {ruolo.mention} è già nella lista.", ephemeral=True
+                )
+                return
+            current = db.get_admin_roles()
+            membri = len([m for m in ruolo.members if not m.bot])
+            embed = build_config_embed(
+                title="✅  Ruolo Amministrazione aggiunto",
+                description=f"{ruolo.mention} riceverà ora le notifiche DM delle richieste.\n👥 Membri notificati: **{membri}**",
+                guild=interaction.guild,
+                current_roles=current,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            log.info(f"Admin role aggiunto: {ruolo.name} ({ruolo.id})")
+
+        elif azione == "remove":
+            ok = db.remove_admin_role(ruolo.id)
+            if not ok:
+                await interaction.response.send_message(
+                    f"⚠️ {ruolo.mention} non è nella lista.", ephemeral=True
+                )
+                return
+            current = db.get_admin_roles()
+            embed = build_config_embed(
+                title="🗑️  Ruolo Amministrazione rimosso",
+                description=f"{ruolo.mention} non riceverà più le notifiche DM.",
+                guild=interaction.guild,
+                current_roles=current,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            log.info(f"Admin role rimosso: {ruolo.name} ({ruolo.id})")
 
     # ── /set-ruoli-autorizzati ───────────────────────────────
     @app_commands.command(
@@ -492,7 +578,7 @@ class StaffRequestCog(commands.Cog):
     )
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
-        azione="aggiungi o rimuovi un ruolo",
+        azione="aggiungi, rimuovi o visualizza i ruoli",
         ruolo="Il ruolo da aggiungere o rimuovere"
     )
     @app_commands.choices(azione=[
@@ -510,34 +596,29 @@ class StaffRequestCog(commands.Cog):
 
         if azione == "list":
             if not current:
-                desc = "Nessun ruolo autorizzato. Usa `/set-ruoli-autorizzati aggiungi` per aggiungerne."
+                desc = "Nessun ruolo autorizzato. Usa **➕ Aggiungi ruolo** per aggiungerne."
             else:
-                roles_text = "\n".join(
+                desc = "\n".join(
                     f"• {interaction.guild.get_role(r).mention if interaction.guild.get_role(r) else f'`{r}` (eliminato)'}"
                     for r in current
                 )
-                desc = roles_text
-            embed = discord.Embed(
-                title=f"📋  Ruoli autorizzati ({len(current)}/10)",
+            embed = build_config_embed(
+                title=f"🛡️  Ruoli autorizzati ({len(current)}/10)",
                 description=desc,
-                color=config.COLORS["default"],
-                timestamp=datetime.utcnow(),
+                guild=interaction.guild,
+                current_roles=current,
             )
-            embed.set_footer(text="Oblivion Network — Configurazione")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
         if ruolo is None:
-            await interaction.response.send_message(
-                "❌ Specifica un ruolo.", ephemeral=True
-            )
+            await interaction.response.send_message("❌ Specifica un ruolo.", ephemeral=True)
             return
 
         if azione == "add":
             if len(current) >= 10:
                 await interaction.response.send_message(
-                    "❌ Hai già raggiunto il limite di **10 ruoli autorizzati**.\n"
-                    "Rimuovine uno prima di aggiungerne un altro.",
+                    "❌ Hai raggiunto il limite di **10 ruoli**. Rimuovine uno prima.",
                     ephemeral=True,
                 )
                 return
@@ -548,14 +629,12 @@ class StaffRequestCog(commands.Cog):
                 )
                 return
             current = db.get_allowed_roles()
-            embed = discord.Embed(
-                title="✅  Ruolo aggiunto",
+            embed = build_config_embed(
+                title="✅  Ruolo autorizzato aggiunto",
                 description=f"{ruolo.mention} può ora usare `/richiesta-amministrazione`.",
-                color=config.COLORS["default"],
-                timestamp=datetime.utcnow(),
+                guild=interaction.guild,
+                current_roles=current,
             )
-            embed.add_field(name="📋  Ruoli autorizzati", value=f"{len(current)}/10", inline=True)
-            embed.set_footer(text="Oblivion Network — Configurazione")
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
         elif azione == "remove":
@@ -566,14 +645,12 @@ class StaffRequestCog(commands.Cog):
                 )
                 return
             current = db.get_allowed_roles()
-            embed = discord.Embed(
-                title="🗑️  Ruolo rimosso",
+            embed = build_config_embed(
+                title="🗑️  Ruolo autorizzato rimosso",
                 description=f"{ruolo.mention} non può più usare `/richiesta-amministrazione`.",
-                color=config.COLORS["urgente"],
-                timestamp=datetime.utcnow(),
+                guild=interaction.guild,
+                current_roles=current,
             )
-            embed.add_field(name="📋  Ruoli rimasti", value=f"{len(current)}/10", inline=True)
-            embed.set_footer(text="Oblivion Network — Configurazione")
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ── /richieste-aperte ────────────────────────────────────
