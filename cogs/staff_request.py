@@ -328,9 +328,10 @@ def build_resolved_embed(request, requester, resolver, channel, stats) -> discor
 # ─────────────────────────────────────────
 
 async def send_transcript(guild, request, requester, resolver, channel):
-    if not config.LOG_CHANNEL_ID:
+    channel_id = db.get_transcript_channel()
+    if not channel_id:
         return
-    log_channel = guild.get_channel(config.LOG_CHANNEL_ID)
+    log_channel = guild.get_channel(channel_id)
     if not log_channel:
         return
 
@@ -464,9 +465,10 @@ async def send_dms(guild, admin_role_ids, request, requester, channel):
 # ─────────────────────────────────────────
 
 async def send_log(guild, request, requester, channel, resolved_by=None):
-    if not config.LOG_CHANNEL_ID:
+    channel_id = db.get_transcript_channel()
+    if not channel_id:
         return
-    log_channel = guild.get_channel(config.LOG_CHANNEL_ID)
+    log_channel = guild.get_channel(channel_id)
     if not log_channel:
         return
 
@@ -625,6 +627,137 @@ class StaffRequestCog(commands.Cog):
         embed.add_field(name="✅  Risolte oggi", value=f"**{stats['resolved_today']}**", inline=True)
         embed.add_field(name="⏱️  Tempo medio risposta", value=f"**{avg}**", inline=True)
         embed.set_footer(text="Oblivion Network — Staff Request Stats")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+    # ── /set-canale-transcript ───────────────────────────────
+    @app_commands.command(
+        name="set-canale-transcript",
+        description="[ADMIN] Imposta o rimuovi il canale dove inviare log e trascritti delle richieste"
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        azione="imposta o rimuovi il canale",
+        canale="Il canale dove inviare i trascritti (solo per 'imposta')"
+    )
+    @app_commands.choices(azione=[
+        app_commands.Choice(name="📌 Imposta canale", value="set"),
+        app_commands.Choice(name="🗑️ Rimuovi canale", value="remove"),
+    ])
+    async def set_canale_transcript(self, interaction: discord.Interaction, azione: str, canale: discord.TextChannel = None):
+        if azione == "set":
+            if canale is None:
+                await interaction.response.send_message("❌ Specifica un canale.", ephemeral=True)
+                return
+            db.set_transcript_channel(canale.id)
+            embed = discord.Embed(
+                title="✅  Canale transcript impostato",
+                description=f"Log e trascritti delle richieste verranno inviati in {canale.mention}.",
+                color=config.COLORS["default"],
+                timestamp=datetime.utcnow(),
+            )
+            embed.add_field(name="🆔  ID Canale", value=f"`{canale.id}`", inline=True)
+            embed.set_footer(text="Oblivion Network — Configurazione")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            log.info(f"Canale transcript impostato: #{canale.name} ({canale.id})")
+
+        elif azione == "remove":
+            db.remove_transcript_channel()
+            embed = discord.Embed(
+                title="🗑️  Canale transcript rimosso",
+                description="Log e trascritti non verranno più inviati da nessuna parte.",
+                color=config.COLORS["urgente"],
+                timestamp=datetime.utcnow(),
+            )
+            embed.set_footer(text="Oblivion Network — Configurazione")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # ── /configurazione ──────────────────────────────────────
+    @app_commands.command(
+        name="configurazione",
+        description="[ADMIN] Mostra tutta la configurazione attuale del bot"
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def configurazione(self, interaction: discord.Interaction):
+        admin_roles = db.get_admin_roles()
+        allowed_roles = db.get_allowed_roles()
+        transcript_ch_id = db.get_transcript_channel()
+        stats = db.get_stats()
+
+        # Ruoli Amministrazione
+        if admin_roles:
+            admin_text = "\n".join(
+                f"• {interaction.guild.get_role(r).mention if interaction.guild.get_role(r) else f'`{r}` ⚠️ eliminato'}"
+                for r in admin_roles
+            )
+        else:
+            admin_text = "⚠️ Nessun ruolo configurato — usa `/set-ruoli-amministrazione`"
+
+        # Ruoli autorizzati
+        if allowed_roles:
+            allowed_text = "\n".join(
+                f"• {interaction.guild.get_role(r).mention if interaction.guild.get_role(r) else f'`{r}` ⚠️ eliminato'}"
+                for r in allowed_roles
+            )
+        else:
+            allowed_text = "⚠️ Nessun ruolo configurato — usa `/set-ruoli-autorizzati`"
+
+        # Canale transcript
+        if transcript_ch_id:
+            ch = interaction.guild.get_channel(transcript_ch_id)
+            transcript_text = ch.mention if ch else f"`{transcript_ch_id}` ⚠️ canale eliminato"
+        else:
+            transcript_text = "⚠️ Non configurato — usa `/set-canale-transcript`"
+
+        # Stato generale
+        tutto_ok = bool(admin_roles) and bool(allowed_roles) and bool(transcript_ch_id)
+        stato = "✅  Configurazione completa" if tutto_ok else "⚠️  Configurazione incompleta"
+
+        embed = discord.Embed(
+            title=f"⚙️  Configurazione Bot — {stato}",
+            description=(
+                "Riepilogo completo della configurazione attuale del sistema richieste.\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=config.COLORS["default"] if tutto_ok else config.COLORS["alta"],
+            timestamp=datetime.utcnow(),
+        )
+        embed.set_author(name="Oblivion Network — Configurazione Bot")
+
+        embed.add_field(
+            name=f"⚜️  Ruoli Amministrazione ({len(admin_roles)}/10)",
+            value=admin_text,
+            inline=False,
+        )
+        embed.add_field(
+            name=f"🛡️  Ruoli autorizzati al comando ({len(allowed_roles)}/10)",
+            value=allowed_text,
+            inline=False,
+        )
+        embed.add_field(
+            name="📄  Canale transcript & log",
+            value=transcript_text,
+            inline=False,
+        )
+        embed.add_field(
+            name="📊  Statistiche correnti",
+            value=(
+                f"🟡 Richieste aperte: **{stats['open']}**  •  "
+                f"✅ Risolte oggi: **{stats['resolved_today']}**  •  "
+                f"📋 Totale storico: **{stats['total']}**"
+            ),
+            inline=False,
+        )
+
+        # Checklist comandi
+        checklist = (
+            f"{'✅' if admin_roles else '❌'}  `/set-ruoli-amministrazione` — ruoli che ricevono i DM\n"
+            f"{'✅' if allowed_roles else '❌'}  `/set-ruoli-autorizzati` — ruoli che usano il comando\n"
+            f"{'✅' if transcript_ch_id else '❌'}  `/set-canale-transcript` — canale log e trascritti"
+        )
+        embed.add_field(name="🔧  Checklist setup", value=checklist, inline=False)
+        embed.set_footer(text="Oblivion Network — Solo gli amministratori possono vedere questo")
+
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
