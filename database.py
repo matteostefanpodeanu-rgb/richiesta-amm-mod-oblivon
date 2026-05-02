@@ -18,33 +18,52 @@ SETTINGS_PATH = "data/settings.json"
 def _load_settings() -> dict:
     os.makedirs("data", exist_ok=True)
     if not os.path.exists(SETTINGS_PATH):
-        return {"admin_role_id": None, "allowed_roles": []}
+        return {"admin_roles": [], "allowed_roles": []}
     with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+        s = json.load(f)
+    # compatibilità vecchio formato ruolo singolo
+    if "admin_role_id" in s and "admin_roles" not in s:
+        s["admin_roles"] = [s["admin_role_id"]] if s["admin_role_id"] else []
+    if "admin_roles" not in s:
+        s["admin_roles"] = []
+    return s
 
 def _save_settings(data: dict):
     os.makedirs("data", exist_ok=True)
     with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-def set_admin_role(role_id: int):
+# ── Ruoli Amministrazione (max 10) ─────────
+def get_admin_roles() -> list:
+    return _load_settings().get("admin_roles", [])
+
+def add_admin_role(role_id: int) -> bool:
     s = _load_settings()
-    s["admin_role_id"] = role_id
+    roles = s.get("admin_roles", [])
+    if role_id in roles:
+        return False
+    if len(roles) >= 10:
+        return False
+    roles.append(role_id)
+    s["admin_roles"] = roles
     _save_settings(s)
+    return True
 
-def get_admin_role() -> Optional[int]:
-    return _load_settings().get("admin_role_id")
-
-def set_allowed_roles(role_ids: list):
+def remove_admin_role(role_id: int) -> bool:
     s = _load_settings()
-    s["allowed_roles"] = role_ids
+    roles = s.get("admin_roles", [])
+    if role_id not in roles:
+        return False
+    roles.remove(role_id)
+    s["admin_roles"] = roles
     _save_settings(s)
+    return True
 
+# ── Ruoli autorizzati (max 10) ─────────────
 def get_allowed_roles() -> list:
     return _load_settings().get("allowed_roles", [])
 
 def add_allowed_role(role_id: int) -> bool:
-    """Aggiunge un ruolo. Ritorna False se già presente o limite raggiunto."""
     s = _load_settings()
     roles = s.get("allowed_roles", [])
     if role_id in roles:
