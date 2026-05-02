@@ -12,13 +12,13 @@ SETTINGS_PATH = "data/settings.json"
 
 
 # ─────────────────────────────────────────
-#  SETTINGS (ruolo admin, ruoli autorizzati)
+#  SETTINGS
 # ─────────────────────────────────────────
 
 def _load_settings() -> dict:
     os.makedirs("data", exist_ok=True)
     if not os.path.exists(SETTINGS_PATH):
-        return {"admin_roles": [], "allowed_roles": []}
+        return {"admin_roles": [], "allowed_roles": [], "transcript_channel_id": None}
     with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
         s = json.load(f)
     # compatibilità vecchio formato ruolo singolo
@@ -26,6 +26,8 @@ def _load_settings() -> dict:
         s["admin_roles"] = [s["admin_role_id"]] if s["admin_role_id"] else []
     if "admin_roles" not in s:
         s["admin_roles"] = []
+    if "transcript_channel_id" not in s:
+        s["transcript_channel_id"] = None
     return s
 
 def _save_settings(data: dict):
@@ -84,6 +86,20 @@ def remove_allowed_role(role_id: int) -> bool:
     s["allowed_roles"] = roles
     _save_settings(s)
     return True
+
+# ── Canale transcript ──────────────────────
+def get_transcript_channel() -> Optional[int]:
+    return _load_settings().get("transcript_channel_id")
+
+def set_transcript_channel(channel_id: int):
+    s = _load_settings()
+    s["transcript_channel_id"] = channel_id
+    _save_settings(s)
+
+def remove_transcript_channel():
+    s = _load_settings()
+    s["transcript_channel_id"] = None
+    _save_settings(s)
 
 
 # ─────────────────────────────────────────
